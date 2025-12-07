@@ -25,12 +25,14 @@ input, textarea {
   caret-color: white !important;
 }
 #lightIndicator {
-  width: 60px;
-  height: 60px;
+  width: 80px;
+  height: 80px;
   border-radius: 50%;
   background: #ff0000;
   box-shadow: 0 0 20px #ff0000;
-  transition: background 0.2s, box-shadow 0.2s;
+  transition: background 0.1s, box-shadow 0.1s;
+  position: relative;
+  overflow: hidden;
 }
 </style>
 </head>
@@ -43,6 +45,7 @@ input, textarea {
 </div>
 <p class="text-center text-lg opacity-80 mb-6">The securest form of digital communication</p>
 
+<!-- Communication ID -->
 <div class="w-full max-w-2xl bg-gray-800 dark:bg-gray-200 p-4 rounded-xl shadow-xl mb-6">
   <label class="block mb-2 text-sm">Communication ID</label>
   <div class="flex gap-2">
@@ -51,12 +54,14 @@ input, textarea {
   </div>
 </div>
 
+<!-- Message to flash -->
 <div class="w-full max-w-2xl bg-gray-800 dark:bg-gray-200 p-4 rounded-xl shadow-xl mb-6">
   <label class="block mb-2 text-sm">Message to Flash</label>
   <textarea id="flashMessage" placeholder="Type message..." class="w-full h-24 p-2 rounded"></textarea>
   <button onclick="sendFlashMessage()" class="w-full mt-3 py-2 bg-green-600 text-white rounded font-semibold hover:bg-green-700 transition">Send Flash Signal</button>
 </div>
 
+<!-- Receive Mode -->
 <div class="w-full max-w-2xl bg-gray-800 dark:bg-gray-200 p-4 rounded-xl shadow-xl mb-6">
   <h2 class="font-bold mb-2">Receive Mode</h2>
   <p class="text-sm mb-2 opacity-80">Point your camera at the flashing phone and enter the Communication ID.</p>
@@ -67,6 +72,7 @@ input, textarea {
   <div id="receivedOutput" class="p-3 bg-black dark:bg-white text-green-400 dark:text-purple-700 rounded h-24 overflow-y-auto"></div>
 </div>
 
+<!-- Camera Preview + Light Detector -->
 <div class="w-full max-w-2xl flex flex-col items-center mb-6">
   <video id="video" autoplay playsinline class="w-full rounded-xl shadow-lg"></video>
   <div id="lightIndicator" class="mt-3"></div>
@@ -94,6 +100,7 @@ async function initCamera() {
   track = stream.getVideoTracks()[0];
 }
 
+// Send flashes
 async function sendFlashMessage() {
   const msg = document.getElementById("flashMessage").value.trim();
   if (!msg) return alert("Enter a message first");
@@ -122,29 +129,38 @@ async function sendFlashMessage() {
   nextChar();
 }
 
+// Enhanced receive mode
 async function startReceive() {
   if (!stream) await initCamera();
   receiveActive = true;
   const video = document.getElementById("video");
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-  const indicator = document.getElementById('lightIndicator');
+  const indicator = document.getElementById("lightIndicator");
+
+  let brightnessHistory = [];
+  const historyLength = 5; // smoothing
 
   function readFrame() {
     if (!receiveActive) return;
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
+    const w = 100, h = 100; // central sample region
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(video, video.videoWidth/2 - w/2, video.videoHeight/2 - h/2, w, h, 0, 0, w, h);
+    const frame = ctx.getImageData(0, 0, w, h).data;
 
-    const frame = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
     let brightness = 0;
     for (let i = 0; i < frame.length; i += 4)
-      brightness += frame[i] + frame[i + 1] + frame[i + 2];
-    brightness /= frame.length / 4;
+      brightness += 0.299*frame[i] + 0.587*frame[i+1] + 0.114*frame[i+2];
+    brightness /= frame.length/4;
 
-    const threshold = 130;
-    const bit = brightness > threshold ? 1 : 0;
+    brightnessHistory.push(brightness);
+    if (brightnessHistory.length > historyLength) brightnessHistory.shift();
+    const avg = brightnessHistory.reduce((a,b)=>a+b,0)/brightnessHistory.length;
+
+    const flashDetected = brightness - avg > 40; // sudden spike
+    const bit = flashDetected ? 1 : 0;
 
     if (bit !== lastLight) {
       binaryBuffer += bit;
@@ -156,12 +172,13 @@ async function startReceive() {
       lastLight = bit;
     }
 
-    // update light detector with glow effect
-    indicator.style.background = bit ? '#00ff00' : '#ff0000';
-    indicator.style.boxShadow = bit ? '0 0 30px #00ff00' : '0 0 20px #ff0000';
+    // glowing indicator
+    indicator.style.background = flashDetected ? '#00ff00' : '#ff0000';
+    indicator.style.boxShadow = flashDetected ? '0 0 40px #00ff00' : '0 0 20px #ff0000';
 
     requestAnimationFrame(readFrame);
   }
+
   readFrame();
 }
 </script>
