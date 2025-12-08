@@ -6,158 +6,217 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-body { background-color: #111; color: #fff; font-family: sans-serif; margin:0; padding:0;}
-button { cursor:pointer; transition:all 0.2s;}
-button:hover { opacity:0.85;}
-#video { border-radius: 12px; width: 100%; max-width: 400px;}
-#lightIndicator { width: 60px; height:60px; border-radius:50%; background:#ff0000; box-shadow:0 0 20px #ff0000; transition:0.2s;}
-#messageOutput { background:#000; color:#0f0; padding:10px; border-radius:8px; height:100px; overflow-y:auto; }
-#detectionArea { position:absolute; border:2px dashed #0f0; pointer-events:none; }
+body {
+  background-color: #111;
+  color: white;
+  font-family: sans-serif;
+}
+input, textarea, button {
+  border-radius: 8px;
+  outline: none;
+}
+input, textarea {
+  background: #222;
+  color: white;
+  padding: 8px;
+}
+button {
+  background: #4f46e5;
+  color: white;
+  padding: 8px 16px;
+  margin: 4px;
+  cursor: pointer;
+}
+button:hover {
+  background: #6366f1;
+}
+#video {
+  border-radius: 12px;
+  max-height: 300px;
+  width: 100%;
+}
+#lightIndicator {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: #ff0000;
+  margin-top: 10px;
+  box-shadow: 0 0 20px #ff0000;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+#chatWindow {
+  background: #222;
+  padding: 8px;
+  border-radius: 12px;
+  height: 200px;
+  overflow-y: auto;
+}
+#syncStatus {
+  margin-top: 6px;
+  font-size: 0.9rem;
+  color: #aaa;
+}
 </style>
 </head>
-<body class="flex flex-col items-center p-4">
+<body class="p-4">
 
 <h1 class="text-2xl font-bold mb-4">Flasher Messaging ⚡</h1>
-<p class="mb-4 opacity-70 text-center">Point your camera at the flashing device to receive messages.</p>
 
-<div class="flex gap-2 mb-4">
-  <button class="bg-blue-600 px-4 py-2 rounded" onclick="startReceive()">Start Receiving</button>
-  <button class="bg-green-600 px-4 py-2 rounded" onclick="sendFlashMessage()">Send Flash</button>
-  <button class="bg-purple-600 px-4 py-2 rounded" onclick="togglePrivateSync()">Private Sync</button>
+<!-- User name input -->
+<div class="mb-4">
+  <label>Your Name:</label>
+  <input id="userName" placeholder="Enter your name" />
 </div>
 
-<div class="mb-4 relative">
-  <video id="video" autoplay playsinline></video>
-  <div id="detectionArea"></div>
+<!-- Chat window -->
+<div id="chatWindow" class="mb-4"></div>
+
+<!-- Sync private chat -->
+<div class="mb-4">
+  <button id="toggleSync">Enable Private Sync</button>
+  <div id="syncStatus">Not synced</div>
 </div>
 
-<div class="flex flex-col items-center mb-4">
-  <div id="lightIndicator"></div>
-  <p class="opacity-70 text-sm mt-2">Indicator turns green when a flash is detected</p>
+<!-- Message input -->
+<div class="mb-4">
+  <textarea id="flashMessage" placeholder="Type a message..."></textarea>
+  <button onclick="sendFlashMessage()">Send Flash</button>
 </div>
 
-<div id="messageOutput"></div>
+<!-- Camera preview and light detection -->
+<video id="video" autoplay playsinline></video>
+<div id="lightIndicator"></div>
+<p>Tap the video to select flash detection area</p>
 
 <script>
 let stream, track;
-let receiveActive=false;
-let morseBuffer="", flashStart=null, lastBitTime=0;
-let privateSync=false;
-let detectionRect=null;
+let receiveActive = false;
+let sending = false;
+let privateSync = false;
+let sessionCode = Math.random().toString(36).substring(2, 10);
+let roi = null; // region of interest
+let lastBrightness = 0;
+let flashStart = null;
+let flashBuffer = "";
+const chatWindow = document.getElementById('chatWindow');
+const indicator = document.getElementById('lightIndicator');
+const syncStatus = document.getElementById('syncStatus');
 
-const dotTime = 150; // ms for dot
-const dashTime = 450; // ms for dash
-const gapTime = 500; // ms to detect end of letter
+const getUserName = () => document.getElementById('userName').value || "You";
 
-// Morse code table
-const morseTable = {
-  '.-':'A','-...':'B','-.-.':'C','-..':'D','.':'E',
-  '..-.':'F','--.':'G','....':'H','..':'I','.---':'J',
-  '-.-':'K','.-..':'L','--':'M','-.':'N','---':'O',
-  '.--.':'P','--.-':'Q','.-.':'R','...':'S','-':'T',
-  '..-':'U','...-':'V','.--':'W','-..-':'X','-.--':'Y',
-  '--..':'Z','-----':'0','.----':'1','..---':'2','...--':'3',
-  '....-':'4','.....':'5','-....':'6','--...':'7','---..':'8','----.':'9',' ':' '
+document.getElementById('toggleSync').onclick = () => {
+  privateSync = !privateSync;
+  syncStatus.innerText = privateSync ? `Synced. Communicating with hidden session.` : "Not synced";
 };
 
-function togglePrivateSync(){
-  privateSync=!privateSync;
-  alert(privateSync?'Private sync enabled':'Private sync disabled');
-}
+document.getElementById('video').onclick = (e) => {
+  const rect = e.target.getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  const y = (e.clientY - rect.top) / rect.height;
+  roi = { x, y, width: 0.2, height: 0.2 }; // 20% region
+  alert("Detection area set!");
+};
 
-async function initCamera(){
-  if(stream) return;
-  stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+async function initCamera() {
+  stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
   const video = document.getElementById('video');
   video.srcObject = stream;
   track = stream.getVideoTracks()[0];
-  // default detection area = whole video
-  detectionRect = {x:0,y:0,width:video.videoWidth,height:video.videoHeight};
 }
 
-function startReceive(){
-  initCamera().then(()=>{
-    receiveActive=true;
-    const video=document.getElementById('video');
-    const canvas=document.createElement('canvas');
-    const ctx=canvas.getContext('2d');
-    const indicator=document.getElementById('lightIndicator');
-    const output=document.getElementById('messageOutput');
+function appendMessage(sender, text) {
+  const div = document.createElement('div');
+  div.innerHTML = `<strong>${sender}:</strong> ${text}`;
+  chatWindow.appendChild(div);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
 
-    function readFrame(){
-      if(!receiveActive) return;
-      canvas.width=video.videoWidth;
-      canvas.height=video.videoHeight;
-      ctx.drawImage(video,0,0,canvas.width,canvas.height);
-      const area=detectionRect || {x:0,y:0,width:canvas.width,height:canvas.height};
-      const frame=ctx.getImageData(area.x,area.y,area.width,area.height).data;
+async function sendFlashMessage() {
+  if (sending) return alert("Already sending");
+  sending = true;
+  const msg = document.getElementById('flashMessage').value.trim();
+  if (!msg) return alert("Enter a message");
 
-      // calculate average brightness
-      let brightness=0;
-      for(let i=0;i<frame.length;i+=4){
-        brightness += 0.299*frame[i]+0.587*frame[i+1]+0.114*frame[i+2];
-      }
-      brightness /= frame.length/4;
+  if (!track) await initCamera();
+  const caps = track.getCapabilities();
+  if (!caps.torch) return alert("Torch not supported");
 
-      const threshold=200;
-      const now=performance.now();
-      let bit=brightness>threshold ? 1 : 0;
-      indicator.style.background=bit?'#0f0':'#f00';
-      indicator.style.boxShadow=bit?'0 0 30px #0f0':'0 0 20px #f00';
+  const binary = msg.split("").map(c => c.charCodeAt(0).toString(2).padStart(8,'0')).join("");
+  let i = 0;
 
-      // detect flashes
-      if(bit && flashStart===null) flashStart=now;
-      if(!bit && flashStart!==null){
-        const duration=now-flashStart;
-        flashStart=null;
-        morseBuffer+=duration<dashTime ? '.' : '-';
-        lastBitTime=now;
-      }
-
-      // end of letter detection
-      if(!bit && morseBuffer && now-lastBitTime>gapTime){
-        // decode
-        let letter=privateSync? decodePrivate(morseBuffer) : morseTable[morseBuffer];
-        if(letter) output.innerText+=letter;
-        morseBuffer="";
-      }
-
-      requestAnimationFrame(readFrame);
+  function nextBit() {
+    if (i >= binary.length) {
+      track.applyConstraints({ advanced: [{ torch: false }] });
+      sending = false;
+      return;
     }
-    readFrame();
-  });
-}
-
-// Simple placeholder private decoding: scramble dots/dashes
-function decodePrivate(buffer){
-  let swap={'.':'-','-':'.'};
-  let swapped='';
-  for(let c of buffer) swapped+=swap[c]||c;
-  return morseTable[swapped]||'?';
-}
-
-async function sendFlashMessage(){
-  const msg=prompt('Type message to flash:');
-  if(!msg) return;
-  if(!track) await initCamera();
-  const caps=track.getCapabilities();
-  if(!caps.torch){alert('Torch not supported');return;}
-  let i=0;
-  function nextChar(){
-    if(i>=msg.length){track.applyConstraints({advanced:[{torch:false}]});return;}
-    const binary=(msg[i].charCodeAt(0).toString(2)).padStart(8,'0');
-    let b=0;
-    function nextBit(){
-      if(b>=binary.length){track.applyConstraints({advanced:[{torch:false}]});return setTimeout(()=>{i++;nextChar();},250);}
-      track.applyConstraints({advanced:[{torch:binary[b]==='1'}]});
-      b++;
-      setTimeout(nextBit,150);
-    }
-    nextBit();
+    const on = binary[i] === "1";
+    track.applyConstraints({ advanced: [{ torch: on }] });
+    i++;
+    setTimeout(nextBit, 150);
   }
-  nextChar();
+  nextBit();
+  appendMessage(getUserName(), msg);
 }
-</script>
 
+async function startReceiving() {
+  if (!stream) await initCamera();
+  receiveActive = true;
+  const video = document.getElementById('video');
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+
+  function readFrame() {
+    if (!receiveActive) return;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0);
+
+    let xStart = 0, yStart = 0, w = canvas.width, h = canvas.height;
+    if (roi) {
+      xStart = roi.x * canvas.width;
+      yStart = roi.y * canvas.height;
+      w = roi.width * canvas.width;
+      h = roi.height * canvas.height;
+    }
+
+    const frame = ctx.getImageData(xStart, yStart, w, h).data;
+    let brightness = 0;
+    for (let i = 0; i < frame.length; i += 4) {
+      brightness += (frame[i] + frame[i+1] + frame[i+2])/3;
+    }
+    brightness /= (frame.length / 4);
+
+    if (brightness > 180 && lastBrightness <= 180) {
+      flashStart = performance.now();
+    }
+    if (brightness <= 180 && lastBrightness > 180 && flashStart) {
+      const duration = performance.now() - flashStart;
+      flashBuffer += duration < 200 ? "." : "-";
+      if (flashBuffer.length >= 8) {
+        const charCode = parseInt(flashBuffer, 2);
+        if (!isNaN(charCode)) {
+          let sender = privateSync ? "Private" : "Unknown";
+          appendMessage(sender, String.fromCharCode(charCode));
+        }
+        flashBuffer = "";
+      }
+      flashStart = null;
+    }
+
+    lastBrightness = brightness;
+
+    indicator.style.background = brightness > 180 ? '#00ff00' : '#ff0000';
+    indicator.style.boxShadow = brightness > 180 ? '0 0 30px #00ff00' : '0 0 20px #ff0000';
+
+    requestAnimationFrame(readFrame);
+  }
+  readFrame();
+}
+
+// Auto-start receiving
+startReceiving();
+</script>
 </body>
 </html>
