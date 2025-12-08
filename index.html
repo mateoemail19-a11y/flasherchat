@@ -6,231 +6,165 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
-body {
-  background-color: #0f111a;
-  color: white;
-  font-family: 'Segoe UI', sans-serif;
-  margin: 0;
-  padding: 20px;
-}
-input, textarea {
-  background-color: #1e1f2a;
-  color: white;
-  border: none;
-  padding: 10px;
-  border-radius: 8px;
-  width: 100%;
-  box-sizing: border-box;
-}
-button {
-  background-color: #4f46e5;
-  color: white;
-  padding: 10px 16px;
-  margin-top: 5px;
-  border-radius: 8px;
-  border: none;
-  cursor: pointer;
-  font-weight: 500;
-  transition: background 0.2s, transform 0.1s;
-}
-button:hover {
-  background-color: #6366f1;
-  transform: scale(1.02);
-}
-#video {
-  border-radius: 12px;
-  max-height: 300px;
-  width: 100%;
-  margin-top: 10px;
-}
-#lightIndicator {
-  width: 60px;
-  height: 60px;
-  border-radius: 50%;
-  background: #ff0000;
-  margin-top: 10px;
-  box-shadow: 0 0 20px #ff0000;
-  transition: background 0.2s, box-shadow 0.2s;
-}
-#chatWindow {
-  background-color: #1e1f2a;
-  border-radius: 12px;
-  padding: 10px;
-  height: 200px;
-  overflow-y: auto;
-  margin-bottom: 10px;
-}
-#syncStatus {
-  margin-top: 6px;
-  font-size: 0.9rem;
-  color: #aaa;
-}
+  body { background: #111; color: #fff; font-family: sans-serif; }
+  .btn { padding: 0.6rem 1.2rem; border-radius: 0.5rem; cursor: pointer; transition: 0.2s; font-weight: bold; }
+  .btn:hover { opacity: 0.85; }
+  input, textarea { background: #222; color: #fff; caret-color: #fff; border-radius: 0.5rem; padding: 0.5rem; width: 100%; }
+  #video { border-radius: 0.5rem; }
+  #lightIndicator { width: 50px; height: 50px; border-radius: 50%; background: #ff0000; box-shadow: 0 0 20px #ff0000; margin-top: 0.5rem; transition: all 0.2s; }
+  #roi { position: absolute; border: 2px dashed #00ff00; pointer-events: none; width:100px; height:100px; background: rgba(0,255,0,0.1);}
 </style>
 </head>
-<body>
+<body class="flex flex-col items-center p-4">
 
 <h1 class="text-3xl font-bold mb-4">Flasher Messaging ⚡</h1>
 
-<!-- Username input -->
-<div class="mb-4">
-  <input id="userName" placeholder="Enter your name..." />
+<div class="w-full max-w-xl mb-4">
+  <label class="block mb-1">Username:</label>
+  <input id="username" placeholder="Enter your name">
 </div>
 
-<!-- Chat window -->
-<div id="chatWindow"></div>
-
-<!-- Private sync -->
-<div class="mb-4">
-  <button id="toggleSync">Enable Private Sync</button>
-  <div id="syncStatus">Not synced</div>
+<div class="w-full max-w-xl mb-4 flex gap-2">
+  <button id="sendBtn" class="btn bg-green-600 text-white">Send Flash</button>
+  <button id="receiveBtn" class="btn bg-purple-600 text-white">Receive Flash</button>
+  <button id="privateBtn" class="btn bg-yellow-500 text-white">Private Sync Off</button>
 </div>
 
-<!-- Message input -->
-<div class="mb-4">
-  <textarea id="flashMessage" placeholder="Type a message..."></textarea>
-  <button onclick="sendFlashMessage()">Send Flash</button>
+<div class="w-full max-w-xl mb-4">
+  <label>Message to Flash:</label>
+  <textarea id="flashMessage" placeholder="Type your message"></textarea>
 </div>
 
-<!-- Video and light indicator -->
-<video id="video" autoplay playsinline></video>
+<div class="w-full max-w-xl relative">
+  <video id="video" autoplay playsinline class="w-full"></video>
+  <div id="roi"></div>
+</div>
 <div id="lightIndicator"></div>
-<p>Tap video to select detection area</p>
+
+<div class="w-full max-w-xl mt-4 p-2 bg-gray-900 rounded h-48 overflow-y-auto" id="chatBox"></div>
 
 <script>
-let stream, track;
-let receiveActive = false;
-let sending = false;
+let video, stream, track;
+let sending = false, receiving = false;
 let privateSync = false;
-let sessionCode = Math.random().toString(36).substring(2, 10);
-let roi = null;
-let lastBrightness = 0;
-let flashStart = null;
-let flashBuffer = "";
-const chatWindow = document.getElementById('chatWindow');
-const indicator = document.getElementById('lightIndicator');
-const syncStatus = document.getElementById('syncStatus');
+let roi = {x:0,y:0,w:100,h:100};
+let roiElement = document.getElementById("roi");
+let baselineBrightness = 0;
+let binaryBuffer = '';
+let lastBit = 0;
+const canvas = document.createElement('canvas'); // single hidden canvas
+const ctx = canvas.getContext('2d');
 
-const getUserName = () => document.getElementById('userName').value || "You";
-
-document.getElementById('toggleSync').onclick = () => {
-  privateSync = !privateSync;
-  syncStatus.innerText = privateSync ? `Synced. Communicating with hidden session.` : "Not synced";
+const morseMap = {
+  'A': '.-', 'B':'-...', 'C':'-.-.', 'D':'-..', 'E':'.',
+  'F':'..-.', 'G':'--.', 'H':'....', 'I':'..', 'J':'.---',
+  'K':'-.-', 'L':'.-..', 'M':'--', 'N':'-.', 'O':'---',
+  'P':'.--.', 'Q':'--.-', 'R':'.-.', 'S':'...', 'T':'-',
+  'U':'..-', 'V':'...-', 'W':'.--', 'X':'-..-', 'Y':'-.--',
+  'Z':'--..',
+  '0':'-----','1':'.----','2':'..---','3':'...--','4':'....-',
+  '5':'.....','6':'-....','7':'--...','8':'---..','9':'----.',
+  ' ':' '
 };
 
-document.getElementById('video').onclick = (e) => {
-  const rect = e.target.getBoundingClientRect();
-  const x = (e.clientX - rect.left) / rect.width;
-  const y = (e.clientY - rect.top) / rect.height;
-  roi = { x, y, width: 0.2, height: 0.2 };
-  alert("Detection area set!");
-};
+// private mapping
+function getCharFromMorse(morse){
+  if(privateSync){
+    let chars=Object.keys(morseMap);
+    let morseVals=Object.values(morseMap);
+    let idx=morseVals.indexOf(morse);
+    if(idx>=0) return chars[(idx+5)%chars.length];
+    return '';
+  } else {
+    for(let k in morseMap) if(morseMap[k]===morse) return k;
+    return '';
+  }
+}
 
-async function initCamera() {
-  stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-  const video = document.getElementById('video');
+// initialize camera
+async function initCamera(){
+  video = document.getElementById('video');
+  stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode:'environment' }});
   video.srcObject = stream;
   track = stream.getVideoTracks()[0];
 }
 
-function appendMessage(sender, text) {
-  const div = document.createElement('div');
-  div.innerHTML = `<strong>${sender}:</strong> ${text}`;
-  chatWindow.appendChild(div);
-  chatWindow.scrollTop = chatWindow.scrollHeight;
-}
+// ROI selection
+video?.addEventListener('click', (e)=>{
+  let rect=video.getBoundingClientRect();
+  roi.x = e.clientX-rect.left - roi.w/2;
+  roi.y = e.clientY-rect.top - roi.h/2;
+  roiElement.style.left = roi.x+'px';
+  roiElement.style.top = roi.y+'px';
+  roiElement.style.width = roi.w+'px';
+  roiElement.style.height = roi.h+'px';
+});
 
-async function sendFlashMessage() {
-  if (sending) return alert("Already sending");
-  sending = true;
-  const msg = document.getElementById('flashMessage').value.trim();
-  if (!msg) return alert("Enter a message");
+// toggle private sync
+document.getElementById('privateBtn').onclick = ()=>{
+  privateSync=!privateSync;
+  document.getElementById('privateBtn').innerText = privateSync?'Private Sync On':'Private Sync Off';
+};
 
-  if (!track) await initCamera();
-  const caps = track.getCapabilities();
-  if (!caps.torch) return alert("Torch not supported");
-
-  const binary = msg.split("").map(c => c.charCodeAt(0).toString(2).padStart(8,'0')).join("");
-  let i = 0;
-
-  function nextBit() {
-    if (i >= binary.length) {
-      track.applyConstraints({ advanced: [{ torch: false }] });
-      sending = false;
-      return;
+// send flash
+document.getElementById('sendBtn').onclick = async ()=>{
+  if(!stream) await initCamera();
+  sending=true;
+  let msg = document.getElementById('flashMessage').value.trim();
+  if(!msg) return alert('Type a message');
+  let caps = track.getCapabilities();
+  if(!caps.torch) return alert('Torch not supported');
+  let i=0;
+  function nextChar(){
+    if(i>=msg.length){ track.applyConstraints({advanced:[{torch:false}]}); sending=false; return;}
+    let binary = msg[i].charCodeAt(0).toString(2).padStart(8,'0');
+    let b=0;
+    function nextBit(){
+      if(b>=binary.length){ track.applyConstraints({advanced:[{torch:false}]}); i++; setTimeout(nextChar,250); return;}
+      track.applyConstraints({advanced:[{torch: binary[b]==='1'}]});
+      b++; setTimeout(nextBit,150);
     }
-    const on = binary[i] === "1";
-    track.applyConstraints({ advanced: [{ torch: on }] });
-    i++;
-    setTimeout(nextBit, 150);
+    nextBit();
   }
-  nextBit();
-  appendMessage(getUserName(), msg);
-}
+  nextChar();
+};
 
-async function startReceiving() {
-  if (!stream) await initCamera();
-  receiveActive = true;
-  const video = document.getElementById('video');
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
+// receive flash
+document.getElementById('receiveBtn').onclick = async ()=>{
+  if(!stream) await initCamera();
+  receiving=true;
+  binaryBuffer=''; lastBit=0;
+  baselineBrightness=0;
+  canvas.width=video.videoWidth;
+  canvas.height=video.videoHeight;
 
-  let brightnessHistory = [];
+  function readFrame(){
+    if(!receiving) return;
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    let frame = ctx.getImageData(roi.x,roi.y,roi.w,roi.h).data;
+    let total=0;
+    for(let i=0;i<frame.length;i+=4) total += (frame[i]+frame[i+1]+frame[i+2])/3;
+    let avg = total/(frame.length/4);
 
-  function readFrame() {
-    if (!receiveActive) return;
+    baselineBrightness = baselineBrightness*0.9 + avg*0.1;
+    let bit = avg>baselineBrightness+20?1:0; // detects brightness spikes
 
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
-
-    let xStart = 0, yStart = 0, w = canvas.width, h = canvas.height;
-    if (roi) {
-      xStart = roi.x * canvas.width;
-      yStart = roi.y * canvas.height;
-      w = roi.width * canvas.width;
-      h = roi.height * canvas.height;
-    }
-
-    const frame = ctx.getImageData(xStart, yStart, w, h).data;
-    let brightness = 0;
-    for (let i = 0; i < frame.length; i += 4) {
-      brightness += (frame[i] + frame[i+1] + frame[i+2]) / 3;
-    }
-    brightness /= (frame.length / 4);
-
-    brightnessHistory.push(brightness);
-    if (brightnessHistory.length > 10) brightnessHistory.shift();
-    const avg = brightnessHistory.reduce((a,b)=>a+b,0)/brightnessHistory.length;
-
-    if (brightness > avg + 50 && lastBrightness <= avg + 50) {
-      flashStart = performance.now();
-    }
-    if (brightness <= avg + 50 && lastBrightness > avg + 50 && flashStart) {
-      const duration = performance.now() - flashStart;
-      flashBuffer += duration < 200 ? "." : "-";
-      if (flashBuffer.length >= 8) {
-        const charCode = parseInt(flashBuffer, 2);
-        if (!isNaN(charCode)) {
-          let sender = privateSync ? "Private" : "Unknown";
-          appendMessage(sender, String.fromCharCode(charCode));
-        }
-        flashBuffer = "";
+    if(bit!==lastBit){
+      binaryBuffer+=bit;
+      lastBit=bit;
+      if(binaryBuffer.length>=8){
+        let char = String.fromCharCode(parseInt(binaryBuffer,2));
+        document.getElementById('chatBox').innerHTML += `<div><b>${document.getElementById('username').value || 'Anon'}:</b> ${char}</div>`;
+        binaryBuffer='';
       }
-      flashStart = null;
     }
 
-    lastBrightness = brightness;
-
-    indicator.style.background = brightness > avg + 50 ? '#00ff00' : '#ff0000';
-    indicator.style.boxShadow = brightness > avg + 50 ? '0 0 30px #00ff00' : '0 0 20px #ff0000';
-
+    document.getElementById('lightIndicator').style.background = bit?'#0f0':'#f00';
+    document.getElementById('lightIndicator').style.boxShadow = bit?'0 0 25px #0f0':'0 0 20px #f00';
     requestAnimationFrame(readFrame);
   }
   readFrame();
-}
-
-// Start receiving automatically
-startReceiving();
+};
 </script>
 </body>
 </html>
